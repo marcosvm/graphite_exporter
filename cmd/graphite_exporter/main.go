@@ -16,12 +16,16 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"strings"
 
+	"github.com/elazarl/goproxy"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
@@ -159,6 +163,51 @@ func main() {
 			go c.ProcessReader(bytes.NewReader(buf[0:chars]))
 		}
 	}()
+
+	proxy := goproxy.NewProxyHttpServer()
+	proxy.Verbose = false
+
+	proxy.OnRequest().DoFunc(
+		func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+			var buf []byte
+			if r.Method == "POST" && r.URL.Path == "/metric" {
+				var m []struct {
+					Path      string `json:"path"`
+					Value     string `json:"value"`
+					Timestamp string `json:"timestamp"`
+				}
+
+				// if configured to mirror, send the request to its destination
+				buf, err = io.ReadAll(r.Body)
+				if err != nil {
+					ctx.Warnf("error reading body: %s", err)
+					return r, nil
+				}
+
+				err = json.NewDecoder(bytes.NewReader(buf)).Decode(&m)
+				if err != nil {
+					ctx.Warnf("error decoding body: %s", err)
+					return r, nil
+				}
+
+				for _, metric := range m {
+					metric := fmt.Sprintf("%s %s %s\n", metric.Path, metric.Value, metric.Timestamp)
+					go c.ProcessReader(strings.NewReader(metric))
+				}
+
+			}
+			r.Body = io.NopCloser(bytes.NewBuffer(buf))
+			return r, nil
+		})
+
+	go func() {
+
+		if err := http.ListenAndServe(":9999", proxy); err != nil {
+			level.Error(logger).Log("err", err)
+			os.Exit(1)
+		}
+	}()
+	// end proxy
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
