@@ -1,11 +1,9 @@
-ARG ARCH="amd64"
-ARG OS="linux"
-FROM quay.io/prometheus/busybox-${OS}-${ARCH}:latest
+FROM quay.io/prometheus/busybox-${TARGETOS}-${TARGETARCH}:latest
 LABEL maintainer="The Prometheus Authors <prometheus-developers@googlegroups.com>"
 
-ARG ARCH="amd64"
-ARG OS="linux"
-COPY .build/${OS}-${ARCH}/graphite_exporter /bin/graphite_exporter
+ARG TARGETARCH
+ARG TARGETOS
+COPY .build/${TARGETOS}-${TARGETARCH}/graphite_exporter /bin/graphite_exporter
 
 USER        nobody
 EXPOSE      9108 9109 9109/udp
