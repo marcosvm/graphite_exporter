@@ -2,7 +2,6 @@ module github.com/prometheus/graphite_exporter
 
 require (
 	github.com/alecthomas/units v0.0.0-20211218093645-b94a6e3cc137
-	github.com/elazarl/goproxy v0.0.0-20180725130230-947c36da3153
 	github.com/go-graphite/go-whisper v0.0.0-20220708094842-c95739c8e0e7
 	github.com/go-kit/log v0.2.1
 	github.com/pkg/errors v0.9.1

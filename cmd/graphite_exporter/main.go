@@ -25,7 +25,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/elazarl/goproxy"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
@@ -164,50 +163,60 @@ func main() {
 		}
 	}()
 
-	proxy := goproxy.NewProxyHttpServer()
-	proxy.Verbose = false
-
-	proxy.OnRequest().DoFunc(
-		func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-			var buf []byte
-			if r.Method == "POST" && r.URL.Path == "/metric" {
-				var m []struct {
-					Path      string `json:"path"`
-					Value     string `json:"value"`
-					Timestamp string `json:"timestamp"`
-				}
-
-				// if configured to mirror, send the request to its destination
-				buf, err = io.ReadAll(r.Body)
-				if err != nil {
-					ctx.Warnf("error reading body: %s", err)
-					return r, nil
-				}
-
-				err = json.NewDecoder(bytes.NewReader(buf)).Decode(&m)
-				if err != nil {
-					ctx.Warnf("error decoding body: %s", err)
-					return r, nil
-				}
-
-				for _, metric := range m {
-					metric := fmt.Sprintf("%s %s %s\n", metric.Path, metric.Value, metric.Timestamp)
-					go c.ProcessReader(strings.NewReader(metric))
-				}
-
+	http.HandleFunc("/metric", func(w http.ResponseWriter, r *http.Request) {
+		var buf []byte
+		if r.Method == "POST" && r.URL.Path == "/metric" {
+			var m []struct {
+				Path      string `json:"path"`
+				Value     string `json:"value"`
+				Timestamp string `json:"timestamp"`
 			}
-			r.Body = io.NopCloser(bytes.NewBuffer(buf))
-			return r, nil
-		})
 
-	go func() {
+			// if configured to mirror, send the request to its destination
+			buf, err = io.ReadAll(r.Body)
+			if err != nil {
+				level.Error(logger).Log("error reading body", err)
+				return
+			}
 
-		if err := http.ListenAndServe(":9999", proxy); err != nil {
-			level.Error(logger).Log("err", err)
-			os.Exit(1)
+			err = json.NewDecoder(bytes.NewReader(buf)).Decode(&m)
+			if err != nil {
+				level.Error(logger).Log("error decoding body", err)
+				return
+			}
+
+			for _, metric := range m {
+				metric := fmt.Sprintf("%s %s %s\n", metric.Path, metric.Value, metric.Timestamp)
+				go c.ProcessReader(strings.NewReader(metric))
+			}
+
+			mime := r.Header.Get("Content-Type")
+			mirror := os.Getenv("METRICS_MIRROR_URL")
+			if mirror != "" {
+				go func(body []byte, mime string) {
+					client := &http.Client{}
+					req, err := http.NewRequest("POST", mirror, bytes.NewBuffer(buf))
+					req.Header.Set("Content-Type", mime)
+					resp, err := client.Do(req)
+					if err != nil {
+						level.Error(logger).Log("err", "error posting to mirror", err)
+						return
+					}
+					defer func() {
+						if resp != nil {
+							resp.Body.Close()
+						}
+					}()
+
+					_, err = io.ReadAll(resp.Body)
+					if err != nil {
+						level.Error(logger).Log("err", "error reading response", err)
+						return
+					}
+				}(buf, mime)
+			}
 		}
-	}()
-	// end proxy
+	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
