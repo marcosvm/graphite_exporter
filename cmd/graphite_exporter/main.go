@@ -166,30 +166,68 @@ func main() {
 	http.HandleFunc("/metric", func(w http.ResponseWriter, r *http.Request) {
 		var buf []byte
 		if r.Method == "POST" && r.URL.Path == "/metric" {
-			var m []struct {
-				Path      string `json:"path"`
-				Value     string `json:"value"`
-				Timestamp string `json:"timestamp"`
-			}
-
-			// if configured to mirror, send the request to its destination
 			buf, err = io.ReadAll(r.Body)
 			if err != nil {
 				level.Error(logger).Log("error reading body", err)
+				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			switch ser := os.Getenv("SERIALIZATION"); ser {
+			case "SFIA":
+				var m []struct {
+					Path      string  `json:"path"`
+					Value     float64 `json:"value"`
+					Timestamp int     `json:"timestamp"`
+				}
 
-			err = json.NewDecoder(bytes.NewReader(buf)).Decode(&m)
-			if err != nil {
-				level.Error(logger).Log("error decoding body", err)
-				return
-			}
+				err := json.NewDecoder(bytes.NewReader(buf)).Decode(&m)
+				if err != nil {
+					level.Error(logger).Log("error decoding body", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
 
-			for _, metric := range m {
-				metric := fmt.Sprintf("%s %s %s\n", metric.Path, metric.Value, metric.Timestamp)
+				for _, metric := range m {
+					metric := fmt.Sprintf("%s %f %d\n", metric.Path, metric.Value, metric.Timestamp)
+					go c.ProcessReader(strings.NewReader(metric))
+				}
+			case "SSSS":
+				var m struct {
+					Path      string `json:"path"`
+					Value     string `json:"value"`
+					Timestamp string `json:"timestamp"`
+				}
+
+				err := json.NewDecoder(bytes.NewReader(buf)).Decode(&m)
+				if err != nil {
+					level.Error(logger).Log("error decoding body", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+
+				metric := fmt.Sprintf("%s %s %s\n", m.Path, m.Value, m.Timestamp)
 				go c.ProcessReader(strings.NewReader(metric))
+			default:
+				var m []struct {
+					Path      string `json:"path"`
+					Value     string `json:"value"`
+					Timestamp string `json:"timestamp"`
+				}
+
+				err := json.NewDecoder(bytes.NewReader(buf)).Decode(&m)
+				if err != nil {
+					level.Error(logger).Log("error decoding body", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+
+				for _, metric := range m {
+					metric := fmt.Sprintf("%s %s %s\n", metric.Path, metric.Value, metric.Timestamp)
+					go c.ProcessReader(strings.NewReader(metric))
+				}
 			}
 
+			// if configured to mirror, send the request to its destination
 			mime := r.Header.Get("Content-Type")
 			mirror := os.Getenv("METRICS_MIRROR_URL")
 			if mirror != "" {
