@@ -16,14 +16,11 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"strings"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -33,6 +30,7 @@ import (
 	"github.com/prometheus/common/promlog/flag"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/exporter-toolkit/web"
+	"github.com/prometheus/graphite_exporter/cmd/graphite_exporter/proxy"
 	"github.com/prometheus/graphite_exporter/collector"
 	"github.com/prometheus/statsd_exporter/pkg/mapper"
 	"github.com/prometheus/statsd_exporter/pkg/mappercache/lru"
@@ -89,6 +87,9 @@ func main() {
 	http.Handle(*metricsPath, promhttp.Handler())
 	c := collector.NewGraphiteCollector(logger, *strictMatch, *sampleExpiry)
 	prometheus.MustRegister(c)
+
+	p := proxy.NewProxy(logger, c.LineCh)
+	http.HandleFunc("/metric", p.Forward)
 
 	metricMapper := &mapper.MetricMapper{Logger: logger}
 	if *mappingConfig != "" {
@@ -162,99 +163,6 @@ func main() {
 			go c.ProcessReader(bytes.NewReader(buf[0:chars]))
 		}
 	}()
-
-	http.HandleFunc("/metric", func(w http.ResponseWriter, r *http.Request) {
-		var buf []byte
-		if r.Method == "POST" && r.URL.Path == "/metric" {
-			buf, err = io.ReadAll(r.Body)
-			if err != nil {
-				level.Error(logger).Log("error reading body", err)
-				w.WriteHeader(http.StatusBadRequest)
-				return
-			}
-			switch ser := os.Getenv("SERIALIZATION"); ser {
-			case "SFIA":
-				var m []struct {
-					Path      string  `json:"path"`
-					Value     float64 `json:"value"`
-					Timestamp int     `json:"timestamp"`
-				}
-
-				err := json.NewDecoder(bytes.NewReader(buf)).Decode(&m)
-				if err != nil {
-					level.Error(logger).Log("error decoding body", err)
-					w.WriteHeader(http.StatusBadRequest)
-					return
-				}
-
-				for _, metric := range m {
-					metric := fmt.Sprintf("%s %f %d\n", metric.Path, metric.Value, metric.Timestamp)
-					go c.ProcessReader(strings.NewReader(metric))
-				}
-			case "SSSS":
-				var m struct {
-					Path      string `json:"path"`
-					Value     string `json:"value"`
-					Timestamp string `json:"timestamp"`
-				}
-
-				err := json.NewDecoder(bytes.NewReader(buf)).Decode(&m)
-				if err != nil {
-					level.Error(logger).Log("error decoding body", err)
-					w.WriteHeader(http.StatusBadRequest)
-					return
-				}
-
-				metric := fmt.Sprintf("%s %s %s\n", m.Path, m.Value, m.Timestamp)
-				go c.ProcessReader(strings.NewReader(metric))
-			default:
-				var m []struct {
-					Path      string `json:"path"`
-					Value     string `json:"value"`
-					Timestamp string `json:"timestamp"`
-				}
-
-				err := json.NewDecoder(bytes.NewReader(buf)).Decode(&m)
-				if err != nil {
-					level.Error(logger).Log("error decoding body", err)
-					w.WriteHeader(http.StatusBadRequest)
-					return
-				}
-
-				for _, metric := range m {
-					metric := fmt.Sprintf("%s %s %s\n", metric.Path, metric.Value, metric.Timestamp)
-					go c.ProcessReader(strings.NewReader(metric))
-				}
-			}
-
-			// if configured to mirror, send the request to its destination
-			mime := r.Header.Get("Content-Type")
-			mirror := os.Getenv("METRICS_MIRROR_URL")
-			if mirror != "" {
-				go func(body []byte, mime string) {
-					client := &http.Client{}
-					req, err := http.NewRequest("POST", mirror, bytes.NewBuffer(buf))
-					req.Header.Set("Content-Type", mime)
-					resp, err := client.Do(req)
-					if err != nil {
-						level.Error(logger).Log("err", "error posting to mirror", err)
-						return
-					}
-					defer func() {
-						if resp != nil {
-							resp.Body.Close()
-						}
-					}()
-
-					_, err = io.ReadAll(resp.Body)
-					if err != nil {
-						level.Error(logger).Log("err", "error reading response", err)
-						return
-					}
-				}(buf, mime)
-			}
-		}
-	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {

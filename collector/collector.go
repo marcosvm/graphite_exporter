@@ -38,7 +38,7 @@ type graphiteCollector struct {
 	mu                 *sync.Mutex
 	mapper             metricMapper
 	sampleCh           chan *graphiteSample
-	lineCh             chan string
+	LineCh             chan string
 	strictMatch        bool
 	logger             log.Logger
 	tagParseFailures   prometheus.Counter
@@ -50,7 +50,7 @@ type graphiteCollector struct {
 func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry time.Duration) *graphiteCollector {
 	c := &graphiteCollector{
 		sampleCh:    make(chan *graphiteSample),
-		lineCh:      make(chan string),
+		LineCh:      make(chan string),
 		mu:          &sync.Mutex{},
 		samples:     map[string]*graphiteSample{},
 		strictMatch: strictMatch,
@@ -86,7 +86,7 @@ func (c *graphiteCollector) ProcessReader(reader io.Reader) {
 		if ok := lineScanner.Scan(); !ok {
 			break
 		}
-		c.lineCh <- lineScanner.Text()
+		c.LineCh <- lineScanner.Text()
 	}
 }
 
@@ -95,7 +95,7 @@ func (c *graphiteCollector) SetMapper(m metricMapper) {
 }
 
 func (c *graphiteCollector) processLines() {
-	for line := range c.lineCh {
+	for line := range c.LineCh {
 		c.processLine(line)
 	}
 }
