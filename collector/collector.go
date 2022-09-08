@@ -34,20 +34,21 @@ import (
 var invalidMetricChars = regexp.MustCompile("[^a-zA-Z0-9_:]")
 
 type graphiteCollector struct {
-	samples            map[string]*graphiteSample
-	mu                 *sync.Mutex
-	mapper             metricMapper
-	sampleCh           chan *graphiteSample
-	LineCh             chan string
-	strictMatch        bool
-	logger             log.Logger
-	tagParseFailures   prometheus.Counter
-	lastProcessed      prometheus.Gauge
-	sampleExpiryMetric prometheus.Gauge
-	sampleExpiry       time.Duration
+	samples                map[string]*graphiteSample
+	mu                     *sync.Mutex
+	mapper                 metricMapper
+	sampleCh               chan *graphiteSample
+	LineCh                 chan string
+	strictMatch            bool
+	logger                 log.Logger
+	tagParseFailures       prometheus.Counter
+	lastProcessed          prometheus.Gauge
+	sampleExpiryMetric     prometheus.Gauge
+	sampleExpiry           time.Duration
+	sampleCollectionExpiry time.Duration
 }
 
-func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry time.Duration) *graphiteCollector {
+func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry time.Duration, sampleCollectionExpiry time.Duration) *graphiteCollector {
 	c := &graphiteCollector{
 		sampleCh:    make(chan *graphiteSample),
 		LineCh:      make(chan string),
@@ -66,7 +67,8 @@ func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry time
 				Help: "Unix timestamp of the last processed graphite metric.",
 			},
 		),
-		sampleExpiry: sampleExpiry,
+		sampleExpiry:           sampleExpiry,
+		sampleCollectionExpiry: sampleCollectionExpiry,
 		sampleExpiryMetric: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "graphite_sample_expiry_seconds",
@@ -199,7 +201,7 @@ func (c *graphiteCollector) processSamples() {
 			c.mu.Unlock()
 		case <-ticker:
 			// Garbage collect expired samples.
-			ageLimit := time.Now().Add(-c.sampleExpiry)
+			ageLimit := time.Now().Add(-c.sampleExpiry).Add(-c.sampleCollectionExpiry)
 			c.mu.Lock()
 			for k, sample := range c.samples {
 				if ageLimit.After(sample.Timestamp) {
