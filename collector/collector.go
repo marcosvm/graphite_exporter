@@ -34,20 +34,22 @@ import (
 var invalidMetricChars = regexp.MustCompile("[^a-zA-Z0-9_:]")
 
 type graphiteCollector struct {
-	samples            map[string]*graphiteSample
-	mu                 *sync.Mutex
-	mapper             metricMapper
-	sampleCh           chan *graphiteSample
-	LineCh             chan string
-	strictMatch        bool
-	logger             log.Logger
-	tagParseFailures   prometheus.Counter
-	lastProcessed      prometheus.Gauge
-	sampleExpiryMetric prometheus.Gauge
-	sampleExpiry       time.Duration
+	samples              map[string]*graphiteSample
+	mu                   *sync.Mutex
+	mapper               metricMapper
+	sampleCh             chan *graphiteSample
+	LineCh               chan string
+	strictMatch          bool
+	logger               log.Logger
+	tagParseFailures     prometheus.Counter
+	lastProcessed        prometheus.Gauge
+	sampleExpiryMetric   prometheus.Gauge
+	sampleGCWindowMetric prometheus.Gauge
+	sampleExpiry         time.Duration
+	sampleGCWindow       time.Duration
 }
 
-func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry time.Duration) *graphiteCollector {
+func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry, sampleGCWindow time.Duration) *graphiteCollector {
 	c := &graphiteCollector{
 		sampleCh:    make(chan *graphiteSample),
 		LineCh:      make(chan string),
@@ -73,8 +75,16 @@ func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry time
 				Help: "How long in seconds a metric sample is valid for.",
 			},
 		),
+		sampleGCWindow: sampleGCWindow,
+		sampleGCWindowMetric: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "graphite_sample_gc_window_seconds",
+				Help: "How long until a sample is garbage collected.",
+			},
+		),
 	}
 	c.sampleExpiryMetric.Set(sampleExpiry.Seconds())
+	c.sampleGCWindowMetric.Set(sampleGCWindow.Seconds())
 	go c.processSamples()
 	go c.processLines()
 	return c
@@ -172,13 +182,14 @@ func (c *graphiteCollector) processLine(line string) {
 		return
 	}
 	sample := graphiteSample{
-		OriginalName: originalName,
-		Name:         name,
-		Value:        value,
-		Labels:       labels,
-		Type:         prometheus.GaugeValue,
-		Help:         fmt.Sprintf("Graphite metric %s", name),
-		Timestamp:    time.Unix(int64(timestamp), int64(math.Mod(timestamp, 1.0)*1e9)),
+		OriginalName:        originalName,
+		Name:                name,
+		Value:               value,
+		Labels:              labels,
+		Type:                prometheus.GaugeValue,
+		Help:                fmt.Sprintf("Graphite metric %s", name),
+		Timestamp:           time.Unix(int64(timestamp), int64(math.Mod(timestamp, 1.0)*1e9)),
+		CollectionTimestamp: time.Now(),
 	}
 	level.Debug(c.logger).Log("msg", "Processing sample", "sample", sample)
 	c.lastProcessed.Set(float64(time.Now().UnixNano()) / 1e9)
@@ -199,10 +210,10 @@ func (c *graphiteCollector) processSamples() {
 			c.mu.Unlock()
 		case <-ticker:
 			// Garbage collect expired samples.
-			ageLimit := time.Now().Add(-c.sampleExpiry)
+			ageLimit := time.Now().Add(-c.sampleGCWindow)
 			c.mu.Lock()
 			for k, sample := range c.samples {
-				if ageLimit.After(sample.Timestamp) {
+				if ageLimit.After(sample.CollectionTimestamp) {
 					delete(c.samples, k)
 				}
 			}
@@ -246,13 +257,14 @@ func (c graphiteCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 type graphiteSample struct {
-	OriginalName string
-	Name         string
-	Labels       prometheus.Labels
-	Help         string
-	Value        float64
-	Type         prometheus.ValueType
-	Timestamp    time.Time
+	OriginalName        string
+	Name                string
+	Labels              prometheus.Labels
+	Help                string
+	Value               float64
+	Type                prometheus.ValueType
+	Timestamp           time.Time
+	CollectionTimestamp time.Time
 }
 
 func (s graphiteSample) String() string {
