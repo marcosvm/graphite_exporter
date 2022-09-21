@@ -209,15 +209,27 @@ func (c *graphiteCollector) processSamples() {
 			c.samples[sample.OriginalName] = sample
 			c.mu.Unlock()
 		case <-ticker:
+			switch {
 			// Garbage collect expired samples.
-			ageLimit := time.Now().Add(-c.sampleGCWindow)
-			c.mu.Lock()
-			for k, sample := range c.samples {
-				if ageLimit.After(sample.CollectionTimestamp) {
-					delete(c.samples, k)
+			case c.sampleGCWindow > 0:
+				ageLimit := time.Now().Add(-c.sampleGCWindow)
+				c.mu.Lock()
+				for k, sample := range c.samples {
+					if ageLimit.After(sample.CollectionTimestamp) {
+						delete(c.samples, k)
+					}
 				}
+				c.mu.Unlock()
+			default:
+				ageLimit := time.Now().Add(-c.sampleExpiry)
+				c.mu.Lock()
+				for k, sample := range c.samples {
+					if ageLimit.After(sample.Timestamp) {
+						delete(c.samples, k)
+					}
+				}
+				c.mu.Unlock()
 			}
-			c.mu.Unlock()
 		}
 	}
 }
