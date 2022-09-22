@@ -47,6 +47,7 @@ type graphiteCollector struct {
 	sampleGCWindowMetric prometheus.Gauge
 	sampleExpiry         time.Duration
 	sampleGCWindow       time.Duration
+	exposeTimestamps     bool
 }
 
 func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry, sampleGCWindow time.Duration) *graphiteCollector {
@@ -102,6 +103,10 @@ func (c *graphiteCollector) ProcessReader(reader io.Reader) {
 
 func (c *graphiteCollector) SetMapper(m metricMapper) {
 	c.mapper = m
+}
+
+func (c *graphiteCollector) ExposeTimestamps(e bool) {
+	c.exposeTimestamps = e
 }
 
 func (c *graphiteCollector) processLines() {
@@ -252,11 +257,15 @@ func (c graphiteCollector) Collect(ch chan<- prometheus.Metric) {
 		if ageLimit.After(sample.Timestamp) {
 			continue
 		}
-		ch <- prometheus.MustNewConstMetric(
+		metric := prometheus.MustNewConstMetric(
 			prometheus.NewDesc(sample.Name, sample.Help, []string{}, sample.Labels),
 			sample.Type,
 			sample.Value,
 		)
+		if c.exposeTimestamps {
+			metric = prometheus.NewMetricWithTimestamp(sample.Timestamp, metric)
+		}
+		ch <- metric
 	}
 }
 
