@@ -243,6 +243,7 @@ func (c *graphiteCollector) processSamples() {
 func (c graphiteCollector) Collect(ch chan<- prometheus.Metric) {
 	c.lastProcessed.Collect(ch)
 	c.sampleExpiryMetric.Collect(ch)
+	c.sampleGCWindowMetric.Collect(ch)
 	c.tagParseFailures.Collect(ch)
 
 	c.mu.Lock()
@@ -274,6 +275,7 @@ func (c graphiteCollector) Collect(ch chan<- prometheus.Metric) {
 func (c graphiteCollector) Describe(ch chan<- *prometheus.Desc) {
 	c.lastProcessed.Describe(ch)
 	c.sampleExpiryMetric.Describe(ch)
+	c.sampleGCWindowMetric.Describe(ch)
 	c.tagParseFailures.Describe(ch)
 }
 
