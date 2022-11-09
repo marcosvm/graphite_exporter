@@ -4,3 +4,6 @@
 /graphite_exporter
 *.tar.gz
 /getool
+.idea
+.vscode
+junk
