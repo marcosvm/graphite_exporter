@@ -70,6 +70,7 @@ type graphiteCollector struct {
 	samples              map[string]*graphiteSample
 	DiscardedLines       Discarded
 	mu                   *sync.Mutex
+	muo                  *sync.RWMutex
 	mapper               metricMapper
 	sampleCh             chan *graphiteSample
 	LineCh               chan string
@@ -91,6 +92,7 @@ func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry, sam
 		LineCh:         make(chan string),
 		discardedCh:    make(chan string),
 		mu:             &sync.Mutex{},
+		muo:            &sync.RWMutex{},
 		samples:        map[string]*graphiteSample{},
 		DiscardedLines: map[string]*discardedLine{},
 		strictMatch:    strictMatch,
@@ -155,20 +157,27 @@ func (c *graphiteCollector) processLines() {
 
 func (c *graphiteCollector) processDiscarded() {
 	for d := range c.discardedCh {
-		c.mu.Lock()
+		c.muo.Lock()
 		if s, ok := c.DiscardedLines[d]; ok {
 			s.count++
 		} else {
-			// let's keep to the first 100
-			if len(c.DiscardedLines) > 100 {
+			// let's keep to the first 50
+			if len(c.DiscardedLines) >= 50 {
+				c.muo.Unlock()
 				continue
 			}
 			c.DiscardedLines[d] = &discardedLine{count: 1, line: d}
 		}
-		c.mu.Unlock()
+		c.muo.Unlock()
 
 		level.Debug(c.logger).Log("msg", "Discarded sample name", "name", d)
 	}
+}
+
+func (c *graphiteCollector) GetDiscardedLines() string {
+	c.muo.RLock()
+	defer c.muo.RUnlock()
+	return c.DiscardedLines.String()
 }
 
 func (c *graphiteCollector) parseMetricNameAndTags(name string) (string, prometheus.Labels, error) {

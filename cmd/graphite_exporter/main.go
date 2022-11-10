@@ -104,7 +104,7 @@ func main() {
 
 	http.HandleFunc("/discarded", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(c.DiscardedLines.String()))
+		w.Write([]byte(c.GetDiscardedLines()))
 	})
 
 	cache, err := getCache(*cacheSize, *cacheType, prometheus.DefaultRegisterer)
