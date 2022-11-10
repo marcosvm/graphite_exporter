@@ -102,6 +102,11 @@ func main() {
 		}
 	}
 
+	http.HandleFunc("/discarded", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte(c.DiscardedLines.String()))
+	})
+
 	cache, err := getCache(*cacheSize, *cacheType, prometheus.DefaultRegisterer)
 	if err != nil {
 		level.Error(logger).Log("msg", "error initializing mapper cache", "err", err)

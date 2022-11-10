@@ -20,6 +20,7 @@ import (
 	"math"
 	_ "net/http/pprof"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,12 +34,46 @@ import (
 
 var invalidMetricChars = regexp.MustCompile("[^a-zA-Z0-9_:]")
 
+type discardedLine struct {
+	count int
+	line  string
+}
+
+func (d discardedLine) String() string {
+	return fmt.Sprintf("%d %s", d.count, d.line)
+}
+
+type Discarded map[string]*discardedLine
+type DiscardedLine []discardedLine
+
+func (md DiscardedLine) Len() int { return len(md) }
+
+func (md DiscardedLine) Less(i, j int) bool { return md[i].count > md[j].count }
+
+func (md DiscardedLine) Swap(i, j int) { md[i], md[j] = md[j], md[i] }
+
+func (md Discarded) String() string {
+	var metrics DiscardedLine
+
+	for _, d := range md {
+		metrics = append(metrics, *d)
+	}
+	sort.Sort(metrics)
+	var text []string
+	for d := range metrics {
+		text = append(text, metrics[d].String())
+	}
+	return strings.Join(text, "\n")
+}
+
 type graphiteCollector struct {
 	samples              map[string]*graphiteSample
+	DiscardedLines       Discarded
 	mu                   *sync.Mutex
 	mapper               metricMapper
 	sampleCh             chan *graphiteSample
 	LineCh               chan string
+	discardedCh          chan string
 	strictMatch          bool
 	logger               log.Logger
 	tagParseFailures     prometheus.Counter
@@ -52,12 +87,14 @@ type graphiteCollector struct {
 
 func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry, sampleGCWindow time.Duration) *graphiteCollector {
 	c := &graphiteCollector{
-		sampleCh:    make(chan *graphiteSample),
-		LineCh:      make(chan string),
-		mu:          &sync.Mutex{},
-		samples:     map[string]*graphiteSample{},
-		strictMatch: strictMatch,
-		logger:      logger,
+		sampleCh:       make(chan *graphiteSample),
+		LineCh:         make(chan string),
+		discardedCh:    make(chan string),
+		mu:             &sync.Mutex{},
+		samples:        map[string]*graphiteSample{},
+		DiscardedLines: map[string]*discardedLine{},
+		strictMatch:    strictMatch,
+		logger:         logger,
 		tagParseFailures: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: "graphite_tag_parse_failures",
@@ -88,6 +125,7 @@ func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry, sam
 	c.sampleGCWindowMetric.Set(sampleGCWindow.Seconds())
 	go c.processSamples()
 	go c.processLines()
+	go c.processDiscarded()
 	return c
 }
 
@@ -112,6 +150,24 @@ func (c *graphiteCollector) ExposeTimestamps(e bool) {
 func (c *graphiteCollector) processLines() {
 	for line := range c.LineCh {
 		c.processLine(line)
+	}
+}
+
+func (c *graphiteCollector) processDiscarded() {
+	for d := range c.discardedCh {
+		c.mu.Lock()
+		if s, ok := c.DiscardedLines[d]; ok {
+			s.count++
+		} else {
+			// let's keep to the first 100
+			if len(c.DiscardedLines) > 100 {
+				continue
+			}
+			c.DiscardedLines[d] = &discardedLine{count: 1, line: d}
+		}
+		c.mu.Unlock()
+
+		level.Debug(c.logger).Log("msg", "Discarded sample name", "name", d)
 	}
 }
 
@@ -166,6 +222,7 @@ func (c *graphiteCollector) processLine(line string) {
 	}
 
 	if (mappingPresent && mapping.Action == mapper.ActionTypeDrop) || (!mappingPresent && c.strictMatch) {
+		c.discardedCh <- parsedName
 		return
 	}
 
