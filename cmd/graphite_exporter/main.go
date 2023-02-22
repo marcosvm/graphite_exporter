@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"net/url"
 	"os"
 
 	"github.com/go-kit/log"
@@ -87,10 +88,20 @@ func main() {
 	level.Info(logger).Log("build_context", version.BuildContext())
 
 	http.Handle(*metricsPath, promhttp.Handler())
-	c := collector.NewGraphiteCollector(logger, *strictMatch, *sampleExpiry, *sampleGCWindow)
+	c := collector.NewGraphiteCollector(logger, *strictMatch, *sampleExpiry)
+	c.SampleGCWindow(*sampleGCWindow)
 	prometheus.MustRegister(c)
 
-	p := proxy.NewProxy(logger, c.LineCh)
+	var mirror string
+	mirror = os.Getenv("METRICS_MIRROR_URL")
+	if u, err := url.ParseRequestURI(mirror); err != nil {
+		level.Error(logger).Log("error", "not mirrorring, invalid value for METRICS_MIRROR_URL", "msg", err)
+		mirror = ""
+	} else {
+		mirror = u.String()
+	}
+
+	p := proxy.NewProxy(logger, c.LineCh, mirror)
 	http.HandleFunc("/metric", p.Forward)
 
 	metricMapper := &mapper.MetricMapper{Logger: logger}

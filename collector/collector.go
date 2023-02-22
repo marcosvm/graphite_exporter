@@ -86,7 +86,7 @@ type graphiteCollector struct {
 	exposeTimestamps     bool
 }
 
-func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry, sampleGCWindow time.Duration) *graphiteCollector {
+func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry time.Duration) *graphiteCollector {
 	c := &graphiteCollector{
 		sampleCh:       make(chan *graphiteSample),
 		LineCh:         make(chan string),
@@ -115,7 +115,6 @@ func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry, sam
 				Help: "How long in seconds a metric sample is valid for.",
 			},
 		),
-		sampleGCWindow: sampleGCWindow,
 		sampleGCWindowMetric: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "graphite_sample_gc_window_seconds",
@@ -124,7 +123,6 @@ func NewGraphiteCollector(logger log.Logger, strictMatch bool, sampleExpiry, sam
 		),
 	}
 	c.sampleExpiryMetric.Set(sampleExpiry.Seconds())
-	c.sampleGCWindowMetric.Set(sampleGCWindow.Seconds())
 	go c.processSamples()
 	go c.processLines()
 	go c.processDiscarded()
@@ -143,6 +141,11 @@ func (c *graphiteCollector) ProcessReader(reader io.Reader) {
 
 func (c *graphiteCollector) SetMapper(m metricMapper) {
 	c.mapper = m
+}
+
+func (c *graphiteCollector) SampleGCWindow(t time.Duration) {
+	c.sampleGCWindow = t
+	c.sampleGCWindowMetric.Set(t.Seconds())
 }
 
 func (c *graphiteCollector) ExposeTimestamps(e bool) {

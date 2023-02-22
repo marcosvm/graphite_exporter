@@ -20,6 +20,7 @@ type Proxy struct {
 	logger log.Logger
 	c      chan string
 	input  chan string
+	mirror string
 }
 
 type SFIA struct {
@@ -76,7 +77,7 @@ func (c *CDF) String() string {
 	return fmt.Sprintf("%s %f %d", path, c.Values[0], t.Unix())
 }
 
-func NewProxy(logger log.Logger, c chan string) *Proxy {
+func NewProxy(logger log.Logger, c chan string, mirror string) *Proxy {
 	var (
 		bSize int
 		err   error
@@ -97,7 +98,7 @@ func NewProxy(logger log.Logger, c chan string) *Proxy {
 		}
 
 	}(input)
-	return &Proxy{logger, c, input}
+	return &Proxy{logger, c, input, mirror}
 }
 
 func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request) {
@@ -159,15 +160,14 @@ func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request) {
 
 		// if configured to mirror, send the request to its destination
 		mime := r.Header.Get("Content-Type")
-		mirror := os.Getenv("METRICS_MIRROR_URL")
-		if mirror != "" {
+		if p.mirror != "" {
 			go func(body []byte, mime string) {
 				client := &http.Client{}
-				req, err := http.NewRequest("POST", mirror, bytes.NewBuffer(buf))
+				req, err := http.NewRequest("POST", p.mirror, bytes.NewBuffer(buf))
 				req.Header.Set("Content-Type", mime)
 				resp, err := client.Do(req)
 				if err != nil {
-					level.Error(p.logger).Log("err", "error posting to mirror", err)
+					level.Error(p.logger).Log("err", "error posting to mirror", "msg", err)
 					return
 				}
 				defer func() {
@@ -178,7 +178,7 @@ func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request) {
 
 				_, err = io.ReadAll(resp.Body)
 				if err != nil {
-					level.Error(p.logger).Log("err", "error reading response", err)
+					level.Error(p.logger).Log("err", "error reading response", "msg", err)
 					return
 				}
 			}(buf, mime)
