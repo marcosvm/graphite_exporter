@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"net/url"
 	"os"
 
 	"github.com/go-kit/log"
@@ -30,6 +31,7 @@ import (
 	"github.com/prometheus/common/promlog/flag"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/exporter-toolkit/web"
+	"github.com/prometheus/graphite_exporter/cmd/graphite_exporter/proxy"
 	"github.com/prometheus/graphite_exporter/collector"
 	"github.com/prometheus/statsd_exporter/pkg/mapper"
 	"github.com/prometheus/statsd_exporter/pkg/mappercache/lru"
@@ -38,17 +40,19 @@ import (
 )
 
 var (
-	listenAddress   = kingpin.Flag("web.listen-address", "Address on which to expose metrics.").Default(":9108").String()
-	metricsPath     = kingpin.Flag("web.telemetry-path", "Path under which to expose Prometheus metrics.").Default("/metrics").String()
-	graphiteAddress = kingpin.Flag("graphite.listen-address", "TCP and UDP address on which to accept samples.").Default(":9109").String()
-	mappingConfig   = kingpin.Flag("graphite.mapping-config", "Metric mapping configuration file name.").Default("").String()
-	sampleExpiry    = kingpin.Flag("graphite.sample-expiry", "How long a sample is valid for.").Default("5m").Duration()
-	strictMatch     = kingpin.Flag("graphite.mapping-strict-match", "Only store metrics that match the mapping configuration.").Bool()
-	cacheSize       = kingpin.Flag("graphite.cache-size", "Maximum size of your metric mapping cache. Relies on least recently used replacement policy if max size is reached.").Default("1000").Int()
-	cacheType       = kingpin.Flag("graphite.cache-type", "Metric mapping cache type. Valid options are \"lru\" and \"random\"").Default("lru").Enum("lru", "random")
-	dumpFSMPath     = kingpin.Flag("debug.dump-fsm", "The path to dump internal FSM generated for glob matching as Dot file.").Default("").String()
-	checkConfig     = kingpin.Flag("check-config", "Check configuration and exit.").Default("false").Bool()
-	configFile      = kingpin.Flag("web.config", "[EXPERIMENTAL] Path to config yaml file that can enable TLS or authentication.").Default("").String()
+	listenAddress    = kingpin.Flag("web.listen-address", "Address on which to expose metrics.").Default(":9108").String()
+	metricsPath      = kingpin.Flag("web.telemetry-path", "Path under which to expose Prometheus metrics.").Default("/metrics").String()
+	graphiteAddress  = kingpin.Flag("graphite.listen-address", "TCP and UDP address on which to accept samples.").Default(":9109").String()
+	mappingConfig    = kingpin.Flag("graphite.mapping-config", "Metric mapping configuration file name.").Default("").String()
+	sampleExpiry     = kingpin.Flag("graphite.sample-expiry", "How long a sample is valid for.").Default("5m").Duration()
+	sampleGCWindow   = kingpin.Flag("graphite.sample-gc-window", "How long a to garbage collect samples").Default("0m").Duration()
+	strictMatch      = kingpin.Flag("graphite.mapping-strict-match", "Only store metrics that match the mapping configuration.").Bool()
+	cacheSize        = kingpin.Flag("graphite.cache-size", "Maximum size of your metric mapping cache. Relies on least recently used replacement policy if max size is reached.").Default("1000").Int()
+	cacheType        = kingpin.Flag("graphite.cache-type", "Metric mapping cache type. Valid options are \"lru\" and \"random\"").Default("lru").Enum("lru", "random")
+	dumpFSMPath      = kingpin.Flag("debug.dump-fsm", "The path to dump internal FSM generated for glob matching as Dot file.").Default("").String()
+	checkConfig      = kingpin.Flag("check-config", "Check configuration and exit.").Default("false").Bool()
+	configFile       = kingpin.Flag("web.config", "[EXPERIMENTAL] Path to config yaml file that can enable TLS or authentication.").Default("").String()
+	exposeTimestamps = kingpin.Flag("web.expose-timestamps", "Expose timestamps from Graphite samples").Default("false").Bool()
 )
 
 func init() {
@@ -85,7 +89,20 @@ func main() {
 
 	http.Handle(*metricsPath, promhttp.Handler())
 	c := collector.NewGraphiteCollector(logger, *strictMatch, *sampleExpiry)
+	c.SampleGCWindow(*sampleGCWindow)
 	prometheus.MustRegister(c)
+
+	var mirror string
+	mirror = os.Getenv("METRICS_MIRROR_URL")
+	if u, err := url.ParseRequestURI(mirror); err != nil {
+		level.Error(logger).Log("error", "not mirrorring, invalid value for METRICS_MIRROR_URL", "msg", err)
+		mirror = ""
+	} else {
+		mirror = u.String()
+	}
+
+	p := proxy.NewProxy(logger, c.LineCh, mirror)
+	http.HandleFunc("/metric", p.Forward)
 
 	metricMapper := &mapper.MetricMapper{Logger: logger}
 	if *mappingConfig != "" {
@@ -95,6 +112,11 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	http.HandleFunc("/discarded", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte(c.GetDiscardedLines()))
+	})
 
 	cache, err := getCache(*cacheSize, *cacheType, prometheus.DefaultRegisterer)
 	if err != nil {
@@ -117,6 +139,7 @@ func main() {
 	}
 
 	c.SetMapper(metricMapper)
+	c.ExposeTimestamps(*exposeTimestamps)
 
 	tcpSock, err := net.Listen("tcp", *graphiteAddress)
 	if err != nil {
